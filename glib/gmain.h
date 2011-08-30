@@ -384,6 +384,10 @@ void     g_source_set_funcs       (GSource        *source,
                                    GSourceFuncs   *funcs);
 gboolean g_source_is_destroyed    (GSource        *source);
 
+void     g_source_set_ready_time  (GSource        *source,
+                                   gint64          wakeup_time);
+
+
 void                 g_source_set_name       (GSource        *source,
                                               const char     *name);
 const char *         g_source_get_name       (GSource        *source);
