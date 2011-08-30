@@ -271,7 +271,6 @@ struct _GMainLoop
 struct _GTimeoutSource
 {
   GSource     source;
-  gint64      expiration;
   guint       interval;
   gboolean    seconds;
 };
@@ -349,10 +348,6 @@ static void g_main_context_add_poll_unlocked    (GMainContext *context,
 						 GPollFD      *fd);
 static void g_main_context_remove_poll_unlocked (GMainContext *context,
 						 GPollFD      *fd);
-
-static gboolean g_timeout_prepare  (GSource     *source,
-				    gint        *timeout);
-static gboolean g_timeout_check    (GSource     *source);
 static gboolean g_timeout_dispatch (GSource     *source,
 				    GSourceFunc  callback,
 				    gpointer     user_data);
@@ -413,8 +408,8 @@ static GSList *main_context_list = NULL;
 
 GSourceFuncs g_timeout_funcs =
 {
-  g_timeout_prepare,
-  g_timeout_check,
+  NULL, /* prepare */
+  NULL, /* check */
   g_timeout_dispatch,
   NULL
 };
@@ -3715,8 +3710,9 @@ static void
 g_timeout_set_expiration (GTimeoutSource *timeout_source,
                           gint64          current_time)
 {
-  timeout_source->expiration = current_time +
-                               (guint64) timeout_source->interval * 1000;
+  gint64 expiration;
+
+  expiration = current_time + (guint64) timeout_source->interval * 1000;
 
   if (timeout_source->seconds)
     {
@@ -3745,42 +3741,17 @@ g_timeout_set_expiration (GTimeoutSource *timeout_source,
        * always only *increase* the expiration time by adding a full
        * second in the case that the microsecond portion decreases.
        */
-      timeout_source->expiration -= timer_perturb;
+      expiration -= timer_perturb;
 
-      remainder = timeout_source->expiration % 1000000;
+      remainder = expiration % 1000000;
       if (remainder >= 1000000/4)
-        timeout_source->expiration += 1000000;
+        expiration += 1000000;
 
-      timeout_source->expiration -= remainder;
-      timeout_source->expiration += timer_perturb;
-    }
-}
-
-static gboolean
-g_timeout_prepare (GSource *source,
-                   gint    *timeout)
-{
-  GTimeoutSource *timeout_source = (GTimeoutSource *) source;
-  gint64 now = g_source_get_time (source);
-
-  if (now < timeout_source->expiration)
-    {
-      /* Round up to ensure that we don't try again too early */
-      *timeout = (timeout_source->expiration - now + 999) / 1000;
-      return FALSE;
+      expiration -= remainder;
+      expiration += timer_perturb;
     }
 
-  *timeout = 0;
-  return TRUE;
-}
-
-static gboolean 
-g_timeout_check (GSource *source)
-{
-  GTimeoutSource *timeout_source = (GTimeoutSource *) source;
-  gint64 now = g_source_get_time (source);
-
-  return timeout_source->expiration <= now;
+  g_source_set_ready_time ((GSource *) timeout_source, expiration);
 }
 
 static gboolean
