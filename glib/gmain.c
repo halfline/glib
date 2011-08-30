@@ -2692,18 +2692,22 @@ g_main_context_prepare (GMainContext *context,
 
       if (!(source->flags & G_SOURCE_READY))
 	{
-	  gboolean result;
+	  gboolean result = FALSE;
 	  gboolean (*prepare)  (GSource  *source, 
 				gint     *timeout);
 
 	  prepare = source->source_funcs->prepare;
-	  context->in_check_or_prepare++;
-	  UNLOCK_CONTEXT (context);
 
-	  result = (*prepare) (source, &source_timeout);
+          if (prepare != NULL)
+            {
+              context->in_check_or_prepare++;
+              UNLOCK_CONTEXT (context);
 
-	  LOCK_CONTEXT (context);
-	  context->in_check_or_prepare--;
+              result = (*prepare) (source, &source_timeout);
+
+              LOCK_CONTEXT (context);
+              context->in_check_or_prepare--;
+            }
 
           if (result == FALSE && source->priv->ready_time != -1)
             {
@@ -2904,18 +2908,21 @@ g_main_context_check (GMainContext *context,
 
       if (!(source->flags & G_SOURCE_READY))
 	{
-	  gboolean result;
+	  gboolean result = FALSE;
 	  gboolean (*check) (GSource  *source);
 
 	  check = source->source_funcs->check;
-	  
-	  context->in_check_or_prepare++;
-	  UNLOCK_CONTEXT (context);
-	  
-	  result = (*check) (source);
-	  
-	  LOCK_CONTEXT (context);
-	  context->in_check_or_prepare--;
+
+          if (check != NULL)
+            {
+              context->in_check_or_prepare++;
+              UNLOCK_CONTEXT (context);
+
+              result = (*check) (source);
+
+              LOCK_CONTEXT (context);
+              context->in_check_or_prepare--;
+            }
 
           if (result == FALSE && source->priv->ready_time != -1)
             {
