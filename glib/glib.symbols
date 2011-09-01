@@ -385,6 +385,9 @@ g_file_open_tmp_utf8
 g_file_test_utf8
 g_mkstemp_utf8
 #endif
+g_handle_add
+g_handle_add_full
+g_handle_source_new
 g_hash_table_add
 g_hash_table_contains
 g_hash_table_destroy

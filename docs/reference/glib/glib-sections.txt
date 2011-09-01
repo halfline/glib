@@ -501,6 +501,11 @@ g_child_watch_add_full
 
 <SUBSECTION>
 GHandle
+g_handle_source_new
+g_handle_add
+g_handle_add_full
+
+<SUBSECTION>
 GPollFD
 g_poll
 G_POLLFD_FORMAT

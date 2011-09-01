@@ -165,6 +165,22 @@ typedef gboolean (*GSourceFunc)       (gpointer user_data);
 typedef void     (*GChildWatchFunc)   (GPid     pid,
                                        gint     status,
                                        gpointer user_data);
+
+/**
+ * GHandleSourceFunc:
+ * @handle: the #GHandle that triggered the event
+ * @condition: the IO conditions reported on @handle
+ * @user_data: user data passed to g_handle_add()
+ *
+ * The type of functions to be called when a #GHandle watch source
+ * triggers.
+ *
+ * Returns: %FALSE if the source should be removed
+ **/
+typedef gboolean (*GHandleSourceFunc) (GHandle      handle,
+                                       GIOCondition condition,
+                                       gpointer     user_data);
+
 struct _GSource
 {
   /*< private >*/
@@ -462,6 +478,9 @@ GSource *g_idle_source_new        (void);
 GSource *g_child_watch_source_new (GPid pid);
 GSource *g_timeout_source_new     (guint interval);
 GSource *g_timeout_source_new_seconds (guint interval);
+GLIB_AVAILABLE_IN_2_36
+GSource *g_handle_source_new      (GHandle      handle,
+                                   GIOCondition condition);
 
 /* Miscellaneous functions
  */
@@ -508,6 +527,19 @@ guint    g_idle_add_full            (gint            priority,
                                      gpointer        data,
                                      GDestroyNotify  notify);
 gboolean g_idle_remove_by_data      (gpointer        data);
+
+GLIB_AVAILABLE_IN_2_36
+guint    g_handle_add               (GHandle           handle,
+                                     GIOCondition      condition,
+                                     GHandleSourceFunc function,
+                                     gpointer          user_data);
+GLIB_AVAILABLE_IN_2_36
+guint    g_handle_add_full          (gint              priority,
+                                     GHandle           handle,
+                                     GIOCondition      condition,
+                                     GHandleSourceFunc function,
+                                     gpointer          user_data,
+                                     GDestroyNotify    notify);
 
 void     g_main_context_invoke_full (GMainContext   *context,
                                      gint            priority,
