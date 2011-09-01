@@ -157,6 +157,22 @@ typedef gboolean (*GSourceFunc)       (gpointer user_data);
 typedef void     (*GChildWatchFunc)   (GPid     pid,
                                        gint     status,
                                        gpointer user_data);
+
+/**
+ * GPollFDFunc:
+ * @poll_fd: the #GPollFD that triggered the event
+ * @user_data: user data passed to g_poll_fd_add()
+ *
+ * The type of functions to be called when a #GPollFD source triggers.
+ *
+ * The function can inspect the @revents field of @poll_fd in order to
+ * determine which IO condition was detected.
+ *
+ * Returns: %FALSE if the source should be removed
+ **/
+typedef gboolean (*GPollFDFunc) (const GPollFD *poll_fd,
+                                 gpointer       user_data);
+
 struct _GSource
 {
   /*< private >*/
@@ -436,6 +452,7 @@ GSource *g_idle_source_new        (void);
 GSource *g_child_watch_source_new (GPid pid);
 GSource *g_timeout_source_new     (guint interval);
 GSource *g_timeout_source_new_seconds (guint interval);
+GSource *g_poll_fd_source_new     (const GPollFD *poll_fd);
 
 /* Miscellaneous functions
  */
@@ -582,6 +599,15 @@ guint    g_idle_add_full            (gint            priority,
                                      gpointer        data,
                                      GDestroyNotify  notify);
 gboolean g_idle_remove_by_data      (gpointer        data);
+
+guint    g_poll_fd_add              (const GPollFD  *poll_fd,
+                                     GPollFDFunc     function,
+                                     gpointer        user_data);
+guint    g_poll_fd_add_full         (gint            priority,
+                                     const GPollFD  *poll_fd,
+                                     GPollFDFunc     function,
+                                     gpointer        user_data,
+                                     GDestroyNotify  notify);
 
 void     g_main_context_invoke_full (GMainContext   *context,
                                      gint            priority,

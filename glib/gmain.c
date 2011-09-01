@@ -4687,6 +4687,146 @@ g_main_context_invoke (GMainContext *context,
                               function, data, NULL);
 }
 
+/* GPollFD source */
+typedef struct
+{
+  GSource source;
+
+  GPollFD poll_fd;
+} GPollFDSource;
+
+static gboolean
+g_poll_fd_source_dispatch (GSource     *source,
+                           GSourceFunc  callback,
+                           gpointer     user_data)
+{
+  GPollFDSource *pfd_source = (GPollFDSource *) source;
+  GPollFDFunc pfd_func = (GPollFDFunc) callback;
+
+  if (!callback)
+    {
+      g_warning ("GPollFD source dispatched without callback\n"
+                 "You must call g_source_set_callback().");
+      return FALSE;
+    }
+
+  return (* pfd_func) (&pfd_source->poll_fd, user_data);
+}
+
+/**
+ * g_poll_fd_source_new:
+ * @poll_fd: a #GPollFD
+ *
+ * Creates a #GSource to watch for a particular IO condition, as
+ * specified by @poll_fd.
+ *
+ * This function takes its own private copy of @poll_fd, and doesn't
+ * modify the original.
+ *
+ * Returns: the newly created #GSource
+ *
+ * Since: 2.32
+ **/
+GSource *
+g_poll_fd_source_new (const GPollFD *poll_fd)
+{
+  static GSourceFuncs source_funcs = {
+    NULL, NULL, g_poll_fd_source_dispatch, NULL
+  };
+  GPollFDSource *pfd_source;
+  GSource *source;
+
+  source = g_source_new (&source_funcs, sizeof (GPollFDSource));
+  pfd_source = (GPollFDSource *) source;
+
+  pfd_source->poll_fd = *poll_fd;
+
+  g_source_add_poll (source, &pfd_source->poll_fd);
+
+  return source;
+}
+
+/**
+ * g_poll_fd_add_full:
+ * @priority: the priority of the source
+ * @poll_fd: a #GPollFD
+ * @function: a #GPollFDFunc
+ * @user_data: data to pass to @function
+ * @notify: function to call when the idle is removed, or %NULL
+ *
+ * Sets a function to be called when the IO condition, as specified by
+ * @poll_fd becomes true.
+ *
+ * This function takes its own private copy of @poll_fd, and doesn't
+ * modify the original.
+ *
+ * This is the same as g_poll_fd_add, except that it allows you to
+ * specify a non-default priority and a provide a #GDestroyNotify for
+ * @user_data.
+ *
+ * Returns: the ID (greater than 0) of the event source
+ *
+ * Since: 2.32
+ **/
+guint
+g_poll_fd_add_full (gint            priority,
+                    const GPollFD  *poll_fd,
+                    GPollFDFunc     function,
+                    gpointer        user_data,
+                    GDestroyNotify  notify)
+{
+  GSource *source;
+  guint id;
+
+  g_return_val_if_fail (function != NULL, 0);
+
+  source = g_poll_fd_source_new (poll_fd);
+
+  if (priority != G_PRIORITY_DEFAULT_IDLE)
+    g_source_set_priority (source, priority);
+
+  g_source_set_callback (source, (GSourceFunc) function, user_data, notify);
+  id = g_source_attach (source, NULL);
+  g_source_unref (source);
+
+  return id;
+}
+
+/**
+ * g_poll_fd_add:
+ * @poll_fd: a #GPollFD
+ * @function: a #GPollFDFunc
+ * @user_data: data to pass to @function
+ *
+ * Sets a function to be called when the IO condition, as specified by
+ * @poll_fd becomes true.
+ *
+ * This function takes its own private copy of @poll_fd, and doesn't
+ * modify the original.
+ *
+ * @function will be called when the specified IO condition becomes
+ * %TRUE.  The function is expected to clear whatever event caused the
+ * IO condition to become true and return %TRUE in order to be notified
+ * when it happens again.  If @function returns %FALSE then the watch
+ * will be cancelled.
+ *
+ * The return value of this function can be passed to g_source_remove()
+ * to cancel the watch at any time that it exists.
+ *
+ * Returns: the ID (greater than 0) of the event source
+ *
+ * Since: 2.32
+ **/
+guint
+g_poll_fd_add (const GPollFD *poll_fd,
+               GPollFDFunc    function,
+               gpointer       user_data)
+{
+  return g_poll_fd_add_full (G_PRIORITY_DEFAULT, poll_fd, function, user_data, NULL);
+}
+
+/* g_main_context_invoke() */
+
 /**
  * g_main_context_invoke_full:
  * @context: (allow-none): a #GMainContext, or %NULL
