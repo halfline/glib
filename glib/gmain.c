@@ -2975,18 +2975,26 @@ g_main_context_prepare (GMainContext *context,
 
       if (!(source->flags & G_SOURCE_READY))
 	{
-	  gboolean result;
-	  gboolean (*prepare)  (GSource  *source, 
-				gint     *timeout);
+	  gboolean result = FALSE;
+	  gboolean (* prepare) (GSource  *source,
+                                gint     *timeout);
 
-	  prepare = source->source_funcs->prepare;
-	  context->in_check_or_prepare++;
-	  UNLOCK_CONTEXT (context);
+          prepare = source->source_funcs->prepare;
 
-	  result = (*prepare) (source, &source_timeout);
+          /* If the prepare function is set, call it.
+           *
+           * Otherwise, assume it would return FALSE with timeout of -1.
+           */
+          if (prepare)
+            {
+              context->in_check_or_prepare++;
+              UNLOCK_CONTEXT (context);
 
-	  LOCK_CONTEXT (context);
-	  context->in_check_or_prepare--;
+              result = (* prepare) (source, &source_timeout);
+
+              LOCK_CONTEXT (context);
+              context->in_check_or_prepare--;
+            }
 
 	  if (result)
 	    {
@@ -3158,19 +3166,26 @@ g_main_context_check (GMainContext *context,
 
       if (!(source->flags & G_SOURCE_READY))
 	{
-	  gboolean result;
-	  gboolean (*check) (GSource  *source);
+          gboolean result = FALSE;
+          gboolean (* check) (GSource *source);
 
-	  check = source->source_funcs->check;
-	  
-	  context->in_check_or_prepare++;
-	  UNLOCK_CONTEXT (context);
-	  
-	  result = (*check) (source);
-	  
-	  LOCK_CONTEXT (context);
-	  context->in_check_or_prepare--;
-	  
+          check = source->source_funcs ? source->source_funcs->check : NULL;
+
+          /* If the check function is set, call it.
+           *
+           * Otherwise assume it would return FALSE.
+           */
+          if (check)
+            {
+              context->in_check_or_prepare++;
+              UNLOCK_CONTEXT (context);
+
+              result = (* check) (source);
+
+              LOCK_CONTEXT (context);
+              context->in_check_or_prepare--;
+            }
+
 	  if (result)
 	    {
 	      GSource *ready_source = source;
