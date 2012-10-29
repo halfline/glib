@@ -102,7 +102,7 @@ struct _GPollFD
 };
 
 /**
- * ghandle:
+ * GHandle:
  *
  * Corresponds to the type of a file handle on the current operating
  * system.  On UNIX this is an integer (file descriptor).  On Windows,

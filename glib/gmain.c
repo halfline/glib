@@ -315,6 +315,9 @@ struct _GSourcePrivate
 {
   GSList *child_sources;
   GSource *parent_source;
+
+  GPollFD **handles;
+  gint      n_handles;
 };
 
 typedef struct _GSourceIter
@@ -1033,6 +1036,7 @@ g_source_attach_unlocked (GSource      *source,
 {
   guint result = 0;
   GSList *tmp_list;
+  gint i;
 
   source->context = context;
   result = source->source_id = context->next_id++;
@@ -1045,6 +1049,14 @@ g_source_attach_unlocked (GSource      *source,
     {
       g_main_context_add_poll_unlocked (context, source->priority, tmp_list->data);
       tmp_list = tmp_list->next;
+    }
+
+  for (i = 0; i < source->priv->n_handles; i++)
+    {
+      GPollFD *handle = source->priv->handles[i];
+
+      if (handle != NULL)
+        g_main_context_add_poll_unlocked (context, source->priority, handle);
     }
 
   tmp_list = source->priv->child_sources;
@@ -1126,12 +1138,22 @@ g_source_destroy_internal (GSource      *source,
 
       if (!SOURCE_BLOCKED (source))
 	{
+          gint i;
+
 	  tmp_list = source->poll_fds;
 	  while (tmp_list)
 	    {
 	      g_main_context_remove_poll_unlocked (context, tmp_list->data);
 	      tmp_list = tmp_list->next;
 	    }
+
+          for (i = 0; i < source->priv->n_handles; i++)
+            {
+              GPollFD *handle = source->priv->handles[i];
+
+              if (handle != NULL)
+                g_main_context_remove_poll_unlocked (context, handle);
+            }
 	}
 
       while (source->priv->child_sources)
@@ -1563,6 +1585,8 @@ g_source_set_priority_unlocked (GSource      *source,
 
       if (!SOURCE_BLOCKED (source))
 	{
+          gint i;
+
 	  tmp_list = source->poll_fds;
 	  while (tmp_list)
 	    {
@@ -1571,6 +1595,17 @@ g_source_set_priority_unlocked (GSource      *source,
 	      
 	      tmp_list = tmp_list->next;
 	    }
+
+          for (i = 0; i < source->priv->n_handles; i++)
+            {
+              GPollFD *handle = source->priv->handles[i];
+
+              if (handle != NULL)
+                {
+                  g_main_context_remove_poll_unlocked (context, handle);
+                  g_main_context_add_poll_unlocked (context, priority, handle);
+                }
+            }
 	}
     }
 
@@ -1805,6 +1840,8 @@ g_source_unref_internal (GSource      *source,
   source->ref_count--;
   if (source->ref_count == 0)
     {
+      gint i;
+
       old_cb_data = source->callback_data;
       old_cb_funcs = source->callback_funcs;
 
@@ -1832,6 +1869,10 @@ g_source_unref_internal (GSource      *source,
 
       g_slist_free (source->poll_fds);
       source->poll_fds = NULL;
+
+      for (i = 0; i < source->priv->n_handles; i++)
+        g_free (source->priv->handles[i]);
+      g_free (source->priv->handles);
 
       g_slice_free (GSourcePrivate, source->priv);
       source->priv = NULL;
@@ -2084,6 +2125,176 @@ g_source_remove_by_funcs_user_data (GSourceFuncs *funcs,
     }
   else
     return FALSE;
+}
+
+/**
+ * g_source_add_handle:
+ * @source: a #GSource
+ * @handle: the #GHandle to monitor
+ * @events: an event mask
+ *
+ * Monitors @handle for the IO events in @events.
+ *
+ * The tag returned by this function can be used to remove or modify the
+ * monitoring of the handle using g_source_remove_handle() or
+ * g_source_modify_handle().
+ *
+ * It is not necessary to remove the handle before destroying the
+ * source; it will be cleaned up automatically.
+ *
+ * Returns: a tag
+ *
+ * Since: 2.36
+ **/
+guint
+g_source_add_handle (GSource      *source,
+                     GHandle       handle,
+                     GIOCondition  events)
+{
+  GMainContext *context;
+  GPollFD *poll_fd;
+  guint tag;
+
+  g_return_val_if_fail (source != NULL, -1);
+  g_return_val_if_fail (!SOURCE_DESTROYED (source), -1);
+
+  context = source->context;
+
+  if (context)
+    LOCK_CONTEXT (context);
+
+  for (tag = 0; tag < source->priv->n_handles; tag++)
+    if (source->priv->handles[tag] == NULL)
+      break;
+
+  /* Since we store pointers to the GPollFD into the GMainContext we
+   * can't be calling g_renew() on them (or the memory would move).
+   *
+   * We need to add another layer of pointer indirection...
+   */
+  if (tag == source->priv->n_handles)
+    source->priv->handles = g_renew (GPollFD *, source->priv->handles, ++source->priv->n_handles);
+
+  poll_fd = g_slice_new (GPollFD);
+  source->priv->handles[tag] = poll_fd;
+  poll_fd->fd = (gssize) handle;
+  poll_fd->events = events;
+  poll_fd->revents = 0;
+
+  if (context)
+    {
+      if (!SOURCE_BLOCKED (source))
+        g_main_context_add_poll_unlocked (context, source->priority, poll_fd);
+      UNLOCK_CONTEXT (context);
+    }
+
+  return tag;
+}
+
+/**
+ * g_source_modify_handle:
+ * @source: a #GSource
+ * @tag: the tag from g_source_add_handle()
+ * @new_events: the new event mask to watch
+ *
+ * Updates the event mask to watch for the handle identified by @tag.
+ *
+ * @tag is the tag returned from g_source_add_handle().
+ *
+ * If you want to remove a handle, don't set its event mask to zero.
+ * Instead, call g_source_remove_handle().
+ *
+ * Since: 2.36
+ **/
+void
+g_source_modify_handle (GSource      *source,
+                        guint         tag,
+                        GIOCondition  new_events)
+{
+  GMainContext *context;
+  GPollFD *poll_fd;
+
+  g_return_if_fail (source != NULL);
+  g_return_if_fail (tag < source->priv->n_handles);
+
+  context = source->context;
+
+  poll_fd = source->priv->handles[tag];
+  poll_fd->events = new_events;
+
+  if (context)
+    g_main_context_wakeup (context);
+}
+
+/**
+ * g_source_remove_handle:
+ * @source: a #GSource
+ * @tag: the tag from g_source_add_handle()
+ *
+ * Reverses the effect of a previous call to g_source_add_handle().
+ *
+ * You only need to call this if you want to remove a handle from being
+ * watched while keeping the same source around.  In the normal case you
+ * will just want to destroy the source.
+ *
+ * Since: 2.36
+ **/
+void
+g_source_remove_handle (GSource *source,
+                        guint    tag)
+{
+  GMainContext *context;
+  GPollFD *poll_fd;
+
+  g_return_if_fail (source != NULL);
+  g_return_if_fail (tag < source->priv->n_handles);
+
+  context = source->context;
+
+  if (context)
+    LOCK_CONTEXT (context);
+
+  poll_fd = source->priv->handles[tag];
+  source->priv->handles[tag] = NULL;
+
+  if (context)
+    {
+      if (!SOURCE_BLOCKED (source))
+        g_main_context_remove_poll_unlocked (context, poll_fd);
+
+      UNLOCK_CONTEXT (context);
+    }
+
+  g_slice_free (GPollFD, poll_fd);
+}
+
+/**
+ * g_source_query_handle:
+ * @source: a #GSource
+ * @tag: the tag from g_source_add_handle()
+ *
+ * Queries the events reported for the file handle corresponding to
+ * @tag on @source during the last poll.
+ *
+ * The return value of this function is only defined when the function
+ * is called from the check or dispatch functions for @source.
+ *
+ * Returns: the conditions reported on the handle
+ *
+ * Since: 2.36
+ **/
+GIOCondition
+g_source_query_handle (GSource *source,
+                       guint    tag)
+{
+  GPollFD *poll_fd;
+
+  g_return_val_if_fail (source != NULL, 0);
+  g_return_val_if_fail (tag < source->priv->n_handles, 0);
+
+  poll_fd = source->priv->handles[tag];
+
+  return poll_fd->revents;
 }
 
 /**
@@ -2599,6 +2810,7 @@ static void
 block_source (GSource *source)
 {
   GSList *tmp_list;
+  gint i;
 
   g_return_if_fail (!SOURCE_BLOCKED (source));
 
@@ -2609,6 +2821,14 @@ block_source (GSource *source)
     {
       g_main_context_remove_poll_unlocked (source->context, tmp_list->data);
       tmp_list = tmp_list->next;
+    }
+
+  for (i = 0; i < source->priv->n_handles; i++)
+    {
+      GPollFD *handle = source->priv->handles[i];
+
+      if (handle != NULL)
+        g_main_context_remove_poll_unlocked (source->context, handle);
     }
 
   if (source->priv && source->priv->child_sources)
@@ -2627,7 +2847,8 @@ static void
 unblock_source (GSource *source)
 {
   GSList *tmp_list;
-  
+  gint i;
+
   g_return_if_fail (SOURCE_BLOCKED (source)); /* Source already unblocked */
   g_return_if_fail (!SOURCE_DESTROYED (source));
   
@@ -2638,6 +2859,14 @@ unblock_source (GSource *source)
     {
       g_main_context_add_poll_unlocked (source->context, source->priority, tmp_list->data);
       tmp_list = tmp_list->next;
+    }
+
+  for (i = 0; i < source->priv->n_handles; i++)
+    {
+      GPollFD *handle = source->priv->handles[i];
+
+      if (handle != NULL)
+        g_main_context_add_poll_unlocked (source->context, source->priority, handle);
     }
 
   if (source->priv && source->priv->child_sources)
@@ -3171,12 +3400,9 @@ g_main_context_check (GMainContext *context,
 
           check = source->source_funcs ? source->source_funcs->check : NULL;
 
-          /* If the check function is set, call it.
-           *
-           * Otherwise assume it would return FALSE.
-           */
           if (check)
             {
+              /* If the check function is set, call it. */
               context->in_check_or_prepare++;
               UNLOCK_CONTEXT (context);
 
@@ -3184,6 +3410,24 @@ g_main_context_check (GMainContext *context,
 
               LOCK_CONTEXT (context);
               context->in_check_or_prepare--;
+            }
+
+          else
+            {
+              /* Otherwise, we are ready in the case that any of our
+               * handles are ready.
+               *
+               * Note: handles are not checked if the source has its own
+               * check function.  In that case, it has to do it itself.
+               */
+              gint i;
+
+              for (i = 0; i < source->priv->n_handles; i++)
+                if (source->priv->handles[i]->fd != -1 && source->priv->handles[i]->revents)
+                  {
+                    result = TRUE;
+                    break;
+                  }
             }
 
 	  if (result)

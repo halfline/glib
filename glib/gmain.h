@@ -410,6 +410,16 @@ const char *         g_source_get_name       (GSource        *source);
 void                 g_source_set_name_by_id (guint           tag,
                                               const char     *name);
 
+guint                g_source_add_handle     (GSource        *source,
+                                              GHandle         handle,
+                                              GIOCondition    events);
+void                 g_source_modify_handle  (GSource        *source,
+                                              guint           tag,
+                                              GIOCondition    new_events);
+void                 g_source_remove_handle  (GSource        *source,
+                                              guint           tag);
+GIOCondition         g_source_query_handle   (GSource        *source,
+                                              guint           tag);
 
 /* Used to implement g_source_connect_closure and internally*/
 void g_source_set_callback_indirect (GSource              *source,
