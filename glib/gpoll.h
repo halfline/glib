@@ -101,6 +101,19 @@ struct _GPollFD
   gushort 	revents;
 };
 
+/**
+ * GHandle:
+ *
+ * Corresponds to the type of a file handle on the current operating
+ * system.  On UNIX this is an integer (file descriptor).  On Windows,
+ * it is HANDLE.
+ **/
+#ifdef G_OS_WIN32
+typedef HANDLE GHandle;
+#else
+typedef gint GHandle;
+#endif
+
 #ifdef G_OS_WIN32
 #if GLIB_SIZEOF_VOID_P == 8
 #define G_POLLFD_FORMAT "%#I64x"

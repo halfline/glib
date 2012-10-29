@@ -500,6 +500,7 @@ g_child_watch_add
 g_child_watch_add_full
 
 <SUBSECTION>
+GHandle
 GPollFD
 g_poll
 G_POLLFD_FORMAT
