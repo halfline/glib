@@ -410,6 +410,26 @@ const char *         g_source_get_name       (GSource        *source);
 void                 g_source_set_name_by_id (guint           tag,
                                               const char     *name);
 
+GLIB_AVAILABLE_IN_2_36
+void                 g_source_set_ready_time (GSource        *source,
+                                              gint64          ready_time);
+GLIB_AVAILABLE_IN_2_36
+gint64               g_source_get_ready_time (GSource        *source);
+
+GLIB_AVAILABLE_IN_2_36
+gpointer             g_source_add_handle     (GSource        *source,
+                                              GHandle         handle,
+                                              GIOCondition    events);
+GLIB_AVAILABLE_IN_2_36
+void                 g_source_modify_handle  (GSource        *source,
+                                              gpointer        tag,
+                                              GIOCondition    new_events);
+GLIB_AVAILABLE_IN_2_36
+void                 g_source_remove_handle  (GSource        *source,
+                                              gpointer        tag);
+GLIB_AVAILABLE_IN_2_36
+GIOCondition         g_source_query_handle   (GSource        *source,
+                                              gpointer        tag);
 
 /* Used to implement g_source_connect_closure and internally*/
 void g_source_set_callback_indirect (GSource              *source,

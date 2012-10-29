@@ -315,6 +315,9 @@ struct _GSourcePrivate
 {
   GSList *child_sources;
   GSource *parent_source;
+
+  GSList *handles;
+  gint64 ready_time;
 };
 
 typedef struct _GSourceIter
@@ -836,6 +839,8 @@ g_source_new (GSourceFuncs *source_funcs,
 
   source->flags = G_HOOK_FLAG_ACTIVE;
 
+  source->priv->ready_time = -1;
+
   /* NULL/0 initialization for all other fields */
   
   return source;
@@ -1047,6 +1052,9 @@ g_source_attach_unlocked (GSource      *source,
       tmp_list = tmp_list->next;
     }
 
+  for (tmp_list = source->priv->handles; tmp_list; tmp_list = tmp_list->next)
+    g_main_context_add_poll_unlocked (context, source->priority, tmp_list->data);
+
   tmp_list = source->priv->child_sources;
   while (tmp_list)
     {
@@ -1132,6 +1140,9 @@ g_source_destroy_internal (GSource      *source,
 	      g_main_context_remove_poll_unlocked (context, tmp_list->data);
 	      tmp_list = tmp_list->next;
 	    }
+
+          for (tmp_list = source->priv->handles; tmp_list; tmp_list = tmp_list->next)
+            g_main_context_remove_poll_unlocked (context, tmp_list->data);
 	}
 
       while (source->priv->child_sources)
@@ -1571,6 +1582,12 @@ g_source_set_priority_unlocked (GSource      *source,
 	      
 	      tmp_list = tmp_list->next;
 	    }
+
+          for (tmp_list = source->priv->handles; tmp_list; tmp_list = tmp_list->next)
+            {
+              g_main_context_remove_poll_unlocked (context, tmp_list->data);
+              g_main_context_add_poll_unlocked (context, priority, tmp_list->data);
+            }
 	}
     }
 
@@ -1626,6 +1643,70 @@ g_source_get_priority (GSource *source)
   g_return_val_if_fail (source != NULL, 0);
 
   return source->priority;
+}
+
+/**
+ * g_source_set_ready_time:
+ * @source: a #GSource
+ * @ready_time: the monotonic time at which the source will be ready,
+ *              0 for "immediately", -1 for "never"
+ *
+ * Sets a #GSource to be dispatched when the given monotonic time is
+ * reached (or passed).  If the monotonic time is in the past (as it
+ * always will be if @ready_time is 0) then the source will be
+ * dispatched immediately.
+ *
+ * If @ready_time is -1 then the source is never woken up on the basis
+ * of the passage of time.
+ *
+ * Dispatching the source does not reset the ready time.  You should do
+ * so yourself, from the source dispatch function.
+ *
+ * Since: 2.36
+ **/
+void
+g_source_set_ready_time (GSource *source,
+                         gint64   ready_time)
+{
+  GMainContext *context;
+
+  g_return_if_fail (source != NULL);
+  g_return_if_fail (source->ref_count > 0);
+
+  if (source->priv->ready_time == ready_time)
+    return;
+
+  context = source->context;
+
+  if (context)
+    LOCK_CONTEXT (context);
+
+  source->priv->ready_time = ready_time;
+
+  if (context)
+    {
+      /* Quite likely that we need to change the timeout on the poll */
+      if (!SOURCE_BLOCKED (source))
+        g_wakeup_signal (context->wakeup);
+      UNLOCK_CONTEXT (context);
+    }
+}
+
+/**
+ * g_source_get_ready_time:
+ * @source: a #GSource
+ *
+ * Gets the "ready time" of @source, as set by
+ * g_source_set_ready_time().
+ *
+ * Returns: the monotonic ready time, 0 for "immediately", -1 for "never"
+ **/
+gint64
+g_source_get_ready_time (GSource *source)
+{
+  g_return_val_if_fail (source != NULL, -1);
+
+  return source->priv->ready_time;
 }
 
 /**
@@ -1832,6 +1913,8 @@ g_source_unref_internal (GSource      *source,
 
       g_slist_free (source->poll_fds);
       source->poll_fds = NULL;
+
+      g_slist_free_full (source->priv->handles, g_free);
 
       g_slice_free (GSourcePrivate, source->priv);
       source->priv = NULL;
@@ -2084,6 +2167,164 @@ g_source_remove_by_funcs_user_data (GSourceFuncs *funcs,
     }
   else
     return FALSE;
+}
+
+/**
+ * g_source_add_handle:
+ * @source: a #GSource
+ * @handle: the #GHandle to monitor
+ * @events: an event mask
+ *
+ * Monitors @handle for the IO events in @events.
+ *
+ * The tag returned by this function can be used to remove or modify the
+ * monitoring of the handle using g_source_remove_handle() or
+ * g_source_modify_handle().
+ *
+ * It is not necessary to remove the handle before destroying the
+ * source; it will be cleaned up automatically.
+ *
+ * Returns: an opaque tag
+ *
+ * Since: 2.36
+ **/
+gpointer
+g_source_add_handle (GSource      *source,
+                     GHandle       handle,
+                     GIOCondition  events)
+{
+  GMainContext *context;
+  GPollFD *poll_fd;
+
+  g_return_val_if_fail (source != NULL, NULL);
+  g_return_val_if_fail (!SOURCE_DESTROYED (source), NULL);
+
+  poll_fd = g_new (GPollFD, 1);
+  poll_fd->fd = (gssize) handle;
+  poll_fd->events = events;
+  poll_fd->revents = 0;
+
+  context = source->context;
+
+  if (context)
+    LOCK_CONTEXT (context);
+
+  source->priv->handles = g_slist_prepend (source->priv->handles, poll_fd);
+
+  if (context)
+    {
+      if (!SOURCE_BLOCKED (source))
+        g_main_context_add_poll_unlocked (context, source->priority, poll_fd);
+      UNLOCK_CONTEXT (context);
+    }
+
+  return poll_fd;
+}
+
+/**
+ * g_source_modify_handle:
+ * @source: a #GSource
+ * @tag: the tag from g_source_add_handle()
+ * @new_events: the new event mask to watch
+ *
+ * Updates the event mask to watch for the handle identified by @tag.
+ *
+ * @tag is the tag returned from g_source_add_handle().
+ *
+ * If you want to remove a handle, don't set its event mask to zero.
+ * Instead, call g_source_remove_handle().
+ *
+ * Since: 2.36
+ **/
+void
+g_source_modify_handle (GSource      *source,
+                        gpointer      tag,
+                        GIOCondition  new_events)
+{
+  GMainContext *context;
+  GPollFD *poll_fd;
+
+  g_return_if_fail (source != NULL);
+  g_return_if_fail (g_slist_find (source->priv->handles, tag));
+
+  context = source->context;
+  poll_fd = tag;
+
+  poll_fd->events = new_events;
+
+  if (context)
+    g_main_context_wakeup (context);
+}
+
+/**
+ * g_source_remove_handle:
+ * @source: a #GSource
+ * @tag: the tag from g_source_add_handle()
+ *
+ * Reverses the effect of a previous call to g_source_add_handle().
+ *
+ * You only need to call this if you want to remove a handle from being
+ * watched while keeping the same source around.  In the normal case you
+ * will just want to destroy the source.
+ *
+ * Since: 2.36
+ **/
+void
+g_source_remove_handle (GSource  *source,
+                        gpointer  tag)
+{
+  GMainContext *context;
+  GPollFD *poll_fd;
+
+  g_return_if_fail (source != NULL);
+  g_return_if_fail (g_slist_find (source->priv->handles, tag));
+
+  context = source->context;
+  poll_fd = tag;
+
+  if (context)
+    LOCK_CONTEXT (context);
+
+  source->priv->handles = g_slist_remove (source->priv->handles, poll_fd);
+
+  if (context)
+    {
+      if (!SOURCE_BLOCKED (source))
+        g_main_context_remove_poll_unlocked (context, poll_fd);
+
+      UNLOCK_CONTEXT (context);
+    }
+
+  g_free (poll_fd);
+}
+
+/**
+ * g_source_query_handle:
+ * @source: a #GSource
+ * @tag: the tag from g_source_add_handle()
+ *
+ * Queries the events reported for the file handle corresponding to
+ * @tag on @source during the last poll.
+ *
+ * The return value of this function is only defined when the function
+ * is called from the check or dispatch functions for @source.
+ *
+ * Returns: the conditions reported on the handle
+ *
+ * Since: 2.36
+ **/
+GIOCondition
+g_source_query_handle (GSource  *source,
+                       gpointer  tag)
+{
+  GPollFD *poll_fd;
+
+  g_return_val_if_fail (source != NULL, 0);
+  g_return_val_if_fail (g_slist_find (source->priv->handles, tag), 0);
+
+  poll_fd = tag;
+
+  return poll_fd->revents;
 }
 
 /**
@@ -2611,6 +2852,9 @@ block_source (GSource *source)
       tmp_list = tmp_list->next;
     }
 
+  for (tmp_list = source->priv->handles; tmp_list; tmp_list = tmp_list->next)
+    g_main_context_remove_poll_unlocked (source->context, tmp_list->data);
+
   if (source->priv && source->priv->child_sources)
     {
       tmp_list = source->priv->child_sources;
@@ -2627,7 +2871,7 @@ static void
 unblock_source (GSource *source)
 {
   GSList *tmp_list;
-  
+
   g_return_if_fail (SOURCE_BLOCKED (source)); /* Source already unblocked */
   g_return_if_fail (!SOURCE_DESTROYED (source));
   
@@ -2639,6 +2883,9 @@ unblock_source (GSource *source)
       g_main_context_add_poll_unlocked (source->context, source->priority, tmp_list->data);
       tmp_list = tmp_list->next;
     }
+
+  for (tmp_list = source->priv->handles; tmp_list; tmp_list = tmp_list->next)
+    g_main_context_add_poll_unlocked (source->context, source->priority, tmp_list->data);
 
   if (source->priv && source->priv->child_sources)
     {
@@ -2997,6 +3244,31 @@ g_main_context_prepare (GMainContext *context,
               result = FALSE;
             }
 
+          if (result == FALSE && source->priv->ready_time != -1)
+            {
+              if (!context->time_is_fresh)
+                {
+                  context->time = g_get_monotonic_time ();
+                  context->time_is_fresh = TRUE;
+                }
+
+              if (source->priv->ready_time <= context->time)
+                {
+                  source_timeout = 0;
+                  result = TRUE;
+                }
+              else
+                {
+                  gint timeout;
+
+                  /* rounding down will lead to spinning, so always round up */
+                  timeout = (source->priv->ready_time - context->time + 999) / 1000;
+
+                  if (source_timeout < 0 || timeout < source_timeout)
+                    source_timeout = timeout;
+                }
+            }
+
 	  if (result)
 	    {
 	      GSource *ready_source = source;
@@ -3174,6 +3446,7 @@ g_main_context_check (GMainContext *context,
 
           if (check)
             {
+              /* If the check function is set, call it. */
               context->in_check_or_prepare++;
               UNLOCK_CONTEXT (context);
 
@@ -3184,6 +3457,38 @@ g_main_context_check (GMainContext *context,
             }
           else
             result = FALSE;
+
+          if (result == FALSE)
+            {
+              GSList *tmp_list;
+
+              /* If not already explicitly flagged ready by ->check()
+               * (or if we have no check) then we can still be ready if
+               * any of our handles poll as ready.
+               */
+              for (tmp_list = source->priv->handles; tmp_list; tmp_list = tmp_list->next)
+                {
+                  GPollFD *pollfd = tmp_list->data;
+
+                  if (pollfd->revents)
+                    {
+                      result = TRUE;
+                      break;
+                    }
+                }
+            }
+
+          if (result == FALSE && source->priv->ready_time != -1)
+            {
+              if (!context->time_is_fresh)
+                {
+                  context->time = g_get_monotonic_time ();
+                  context->time_is_fresh = TRUE;
+                }
+
+              if (source->priv->ready_time <= context->time)
+                result = TRUE;
+            }
 
 	  if (result)
 	    {
