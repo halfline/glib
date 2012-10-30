@@ -529,6 +529,7 @@ g_source_get_context
 g_source_set_callback
 GSourceFunc
 g_source_set_callback_indirect
+g_source_set_ready_time
 g_source_add_handle
 g_source_remove_handle
 g_source_modify_handle

@@ -410,6 +410,9 @@ const char *         g_source_get_name       (GSource        *source);
 void                 g_source_set_name_by_id (guint           tag,
                                               const char     *name);
 
+void                 g_source_set_ready_time (GSource        *source,
+                                              gint64          ready_time);
+
 guint                g_source_add_handle     (GSource        *source,
                                               GHandle         handle,
                                               GIOCondition    events);

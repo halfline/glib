@@ -318,6 +318,8 @@ struct _GSourcePrivate
 
   GPollFD **handles;
   gint      n_handles;
+
+  gint64    ready_time;
 };
 
 typedef struct _GSourceIter
@@ -838,6 +840,8 @@ g_source_new (GSourceFuncs *source_funcs,
   source->priority = G_PRIORITY_DEFAULT;
 
   source->flags = G_HOOK_FLAG_ACTIVE;
+
+  source->priv->ready_time = -1;
 
   /* NULL/0 initialization for all other fields */
   
@@ -1661,6 +1665,44 @@ g_source_get_priority (GSource *source)
   g_return_val_if_fail (source != NULL, 0);
 
   return source->priority;
+}
+
+/**
+ * g_source_set_ready_time:
+ * @source: a #GSource
+ * @ready_time: the monotonic time at which the source will be ready,
+ *               or -1
+ *
+ * Sets a #GSource to be dispatched when the given monotonic time is
+ * reached (or passed).
+ *
+ * If @ready_time is -1 then the wakeup is unset.
+ *
+ * Since: 2.36
+ **/
+void
+g_source_set_ready_time (GSource *source,
+                         gint64   ready_time)
+{
+  GMainContext *context;
+
+  g_return_if_fail (source != NULL);
+  g_return_if_fail (source->ref_count > 0);
+
+  context = source->context;
+
+  if (context)
+    LOCK_CONTEXT (context);
+
+  source->priv->ready_time = ready_time;
+
+  if (context)
+    {
+      /* Quite likely that we need to change the timeout on the poll */
+      if (!SOURCE_BLOCKED (source))
+        g_wakeup_signal (context->wakeup);
+      UNLOCK_CONTEXT (context);
+    }
 }
 
 /**
@@ -3225,6 +3267,31 @@ g_main_context_prepare (GMainContext *context,
               context->in_check_or_prepare--;
             }
 
+          if (result == FALSE && source->priv->ready_time != -1)
+            {
+              if (!context->time_is_fresh)
+                {
+                  context->time = g_get_monotonic_time ();
+                  context->time_is_fresh = TRUE;
+                }
+
+              if (source->priv->ready_time <= context->time)
+                {
+                  source_timeout = 0;
+                  result = TRUE;
+                }
+              else
+                {
+                  gint timeout;
+
+                  /* rounding down will lead to spinning, so always round up */
+                  timeout = (source->priv->ready_time - context->time + 999) / 1000;
+
+                  if (source_timeout < 0 || timeout < source_timeout)
+                    source_timeout = timeout;
+                }
+            }
+
 	  if (result)
 	    {
 	      GSource *ready_source = source;
@@ -3428,6 +3495,18 @@ g_main_context_check (GMainContext *context,
                     result = TRUE;
                     break;
                   }
+            }
+
+          if (result == FALSE && source->priv->ready_time != -1)
+            {
+              if (!context->time_is_fresh)
+                {
+                  context->time = g_get_monotonic_time ();
+                  context->time_is_fresh = TRUE;
+                }
+
+              if (source->priv->ready_time <= context->time)
+                result = TRUE;
             }
 
 	  if (result)
