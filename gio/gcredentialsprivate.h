@@ -46,6 +46,15 @@
 #define G_CREDENTIALS_NATIVE_SIZE (sizeof (struct sockpeercred))
 #define G_CREDENTIALS_SOCKET_GET_CREDENTIALS_SUPPORTED 1
 
+#elif defined(__sun__) || defined(__illumos__) || defined (__OpenSolaris_kernel__)
+#include <ucred.h>
+#define G_CREDENTIALS_SUPPORTED 1
+#define G_CREDENTIALS_USE_SOLARIS_UCRED 1
+#define G_CREDENTIALS_NATIVE_TYPE G_CREDENTIALS_TYPE_SOLARIS_UCRED
+#define G_CREDENTIALS_NATIVE_SIZE (ucred_size ())
+#define G_CREDENTIALS_UNIX_CREDENTIALS_MESSAGE_SUPPORTED 1
+#define G_CREDENTIALS_SOCKET_GET_CREDENTIALS_SUPPORTED 1
+
 #endif
 
 #endif /* __G_CREDENTIALS_PRIVATE_H__ */
